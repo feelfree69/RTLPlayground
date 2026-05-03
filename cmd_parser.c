@@ -95,6 +95,14 @@ inline uint8_t isnumber(uint8_t l)
 	return (l <= ('9'-'0'));
 }
 
+inline uint8_t ishexnumber(uint8_t l)
+{
+	if ((l >= '0' && l <= '9') || (l >= 'a' && l <= 'f') || (l >= 'A' && l <= 'F')) {
+		return 1;
+	}
+	return 0;
+}
+
 
 uint8_t cmd_compare(uint8_t start, __code uint8_t * cmd)
 {
@@ -213,6 +221,39 @@ uint8_t atoi_short(__xdata uint16_t *vlan, uint8_t idx)
 	return err;
 }
 
+uint8_t atoi_long_hex(__xdata uint32_t *num, uint8_t idx)
+{
+	uint8_t err = 1;
+	*num = 0;
+
+	while (ishexnumber(cmd_buffer[idx])) {
+		err = 0;
+
+		*num <<= 4;
+
+		if (cmd_buffer[idx] - '0' < 10) {
+			*num |= cmd_buffer[idx] - '0';
+		} else if (cmd_buffer[idx] - 'a' < 6) {
+			*num |= cmd_buffer[idx] - 'a' + 10;
+		} else if (cmd_buffer[idx] - 'A' < 6) {
+			*num |= cmd_buffer[idx] - 'A' + 10;
+		} else {
+			err = 1;
+			break;
+		}
+		idx++;
+	}
+
+	return err;
+}
+
+uint8_t atoi_short_hex(__xdata uint16_t *num, uint8_t idx)
+{
+	__xdata uint32_t temp;
+	__xdata uint8_t err = atoi_long_hex(&temp, idx);
+	*num = (uint16_t) temp;
+	return err;
+}
 
 uint8_t parse_ip(uint8_t idx)
 {
@@ -1369,7 +1410,7 @@ void cmd_parser(void) __banked
 			}
 		} else if (cmd_compare(0, "stat")) {
 			port_stats_print();
-		} else if (cmd_compare(0, "flash") && cmd_words_len == 2) {
+		} else if (cmd_compare(0, "flash") && cmd_words_len >= 2) {
 			uint8_t c = cmd_buffer[cmd_words_b[1]];
 			if (c == 's') {
 				print_string("\nSECURITY REGISTERS\n");
@@ -1393,6 +1434,53 @@ void cmd_parser(void) __banked
 				print_string("\nUNIQUE ID (note: only 4 bytes are likely correct here!)\n");
 				flash_read_uid();
 			}
+			else if (c == 'r') {
+				__xdata uint8_t i;
+				__xdata uint32_t monitor_addr = 0x0;
+				__xdata int16_t monitor_len = 0x100;
+				if (cmd_words_len >= 3) {
+					uint8_t err = atoi_long_hex(&monitor_addr, cmd_words_b[2]);
+					if (err) {
+						print_string("Invalid monitor address\n");
+						return;
+					}
+				}
+
+				if (cmd_words_len >= 4) {
+					uint8_t err = atoi_short_hex(&monitor_len, cmd_words_b[3]);
+					if (err) {
+						print_string("Invalid monitor len\n");
+						return;
+					}
+				}
+
+				do {
+					flash_region.addr = monitor_addr;
+					flash_region.len = 16; 
+					print_byte(flash_region.addr >> 16);
+					print_byte(flash_region.addr >> 8);
+					print_byte(flash_region.addr >> 0);
+					write_char(' ');
+					flash_read_bulk(flash_buf);
+					for (i = 0; i < 16; i++) {
+						if (i % 8 == 0) write_char(' ');
+						print_byte(flash_buf[i]);
+						write_char(' ');
+					}
+					print_string("   |");
+					for (i = 0; i < 16; i++) {
+						if (flash_buf[i] >=0x20 && flash_buf[i] <= 0x7f) {
+							write_char(flash_buf[i]);
+						} else {
+							write_char('.');
+						}
+					}
+					print_string("|\n");
+					monitor_addr += 16;
+					monitor_len -= 16;
+				 } while (monitor_len > 0);
+			}
+
 		} else if (cmd_compare(0, "port")) {
 			parse_port();
 		} else if (cmd_compare(0, "mtu")) {
