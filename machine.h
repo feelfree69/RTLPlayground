@@ -8,6 +8,7 @@
  */
 // #define MACHINE_KP_9000_6XHML_X2
 // #define MACHINE_KP_9000_6XH_X
+// #define MACHINE_KP_9000_6XH_X2
 // #define MACHINE_KP_9000_9XH_X_EU
 // #define MACHINE_KP_9000_9XHML_X_V2_2
 // #define MACHINE_KP_9000_9XHML_X_V3_1
@@ -22,6 +23,8 @@
 // #define MACHINE_LIANGUO_ZX_SWTGW215AS
 // #define MACHINE_ZX310S_4T2XH
 // #define MACHINE_DEFAULT_8C_1SFP
+// #define MACHINE_HI_K0801WS
+// #define MACHINE_FNS1200P
 
 typedef struct {
 	// GPIO pins for SDA/SCL

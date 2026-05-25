@@ -372,6 +372,8 @@ void parse_vlan(void)
 	vlan_settings.vlan = 0;
 	vlan_settings.members = 0;
 	vlan_settings.tagged = 0;
+	if (cmd_words_len < 2)
+		goto err;
 	if (!atoi_short(&vlan_settings.vlan, cmd_words_b[1])) {
 		if (cmd_words_len == 3 && cmd_buffer[cmd_words_b[2]] == 'd') {
 			vlan_delete(vlan_settings.vlan);
@@ -388,10 +390,11 @@ void parse_vlan(void)
 		uint8_t w = 2;
 		if (cmd_words_len > w && isletter(cmd_buffer[cmd_words_b[w]])) {
 			register uint8_t i = 0;
+			vlan_name_remove(vlan_settings.vlan);
 			vlan_names[vlan_ptr++] = hex[(vlan_settings.vlan >> 8) & 0xf];
 			vlan_names[vlan_ptr++] = hex[(vlan_settings.vlan >> 4) & 0xf] ;
 			vlan_names[vlan_ptr++] = hex[vlan_settings.vlan & 0xf];
-			while(cmd_buffer[cmd_words_b[w] + i] != ' ') {
+			while(cmd_buffer[cmd_words_b[w] + i] != ' ' && cmd_buffer[cmd_words_b[w] + i] != '\0') {
 				write_char(cmd_buffer[cmd_words_b[w] + i]);
 				vlan_names[vlan_ptr++] = cmd_buffer[cmd_words_b[w] + i++];
 			}
@@ -734,9 +737,9 @@ void parse_port(void)
 	} else if (cmd_compare(2, "duplex")) {
 		print_string(" DUPLEX\n");
 		if (cmd_compare(3, "full"))
-			phy_settings.speed = PHY_DUPLEX_FULL;
+			phy_settings.duplex = PHY_DUPLEX_FULL;
 		else
-			phy_settings.speed = PHY_DUPLEX_HALF;
+			phy_settings.duplex = PHY_DUPLEX_HALF;
 		phy_set_duplex();
 	} else {
 		print_string("Unknown port command\n");
@@ -1726,4 +1729,38 @@ config_done:
 	// Start saving commands to cmd_history
 	clear_command_history();
 	save_cmd = 1;
+}
+
+// Execute multiple commands
+// If a command is too long or can't be tokenized, remaining commands are not executed
+// Returns the status via `err_status`-variable.
+void execute_commands(__xdata uint8_t *p) __banked {
+	err_status = ERR_OK;
+	uint8_t cmd_idx = 0;
+	while (1) {
+		if (*p == 0 || *p == '\n' || *p == '\r') {
+			if (cmd_idx) {
+				cmd_buffer[cmd_idx] = '\0';
+				cmd_tokenize();
+				if (err_status != ERR_OK)
+					return;
+				cmd_parser();
+			}
+			if (*p == 0)
+				return;
+			cmd_idx = 0;
+		} else {
+			if (cmd_idx < (CMD_BUF_SIZE - 1)) {
+				cmd_buffer[cmd_idx++] = *p;
+			} else {
+				cmd_buffer[CMD_BUF_SIZE - 1] = '\0';
+				print_string("ERROR: Command too long: ");
+				print_string_x(cmd_buffer);
+				write_char('\n');
+				err_status = ERR_CMD_TOO_LONG;
+				return;
+			}
+		}
+		p++;
+	};
 }

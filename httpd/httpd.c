@@ -14,9 +14,6 @@
 #define SESSION_ID_LENGTH 12
 #define SESSION_TIMEOUT 200
 
-// SPI FLASH MEMORY PAGE SIZE.
-#define FLASHMEM_PAGE_SIZE 0x100
-
 #define CMARK_S 6
 
 #pragma codeseg BANK1
@@ -60,11 +57,12 @@ __xdata uint32_t now;
 __xdata uint8_t *timeptr;
 __xdata uint32_t last_session_use;
 
-#define TSTATE_NONE	0
-#define TSTATE_TX	1
-#define TSTATE_ACKED 	2
-#define TSTATE_CLOSED 	3
-#define TSTATE_POST 	4
+#define TSTATE_NONE		0
+#define TSTATE_TX		1
+#define TSTATE_ACKED 		2
+#define TSTATE_CLOSED 		3
+#define TSTATE_POST 		4
+#define TSTATE_MULTIPART	5
 
 extern __xdata uint16_t crc_value;
 __xdata uint16_t crc_final;
@@ -118,33 +116,88 @@ char strcmp(__xdata uint8_t *c, __code uint8_t * __xdata d)
 }
 
 
-char is_word(__xdata uint8_t *c, __code uint8_t * __xdata d)
+bool is_word(__xdata uint8_t *xdata_str_p, __code uint8_t * __xdata code_str_p)
 {
-	uint8_t i = 0;
+	uint8_t u, c;
 
-	while (d[i] && (d[i] == c[i]))
-		i++;
+	while (1) {
+		u = *xdata_str_p++;
+		c = *code_str_p++;
 
-	if (d[i])
-		return 0;
-	if (c[i] != ' ' && c[i] != '\t' && c[i] != ':' && c[i] != '?' && c[i] != '=' && c[i] != '\n' && c[i] != '\r' && c[i])
-		return 0;
-	return 1;
+		if (c == '\0') {
+			if (u != '\0' && u != ' ' && u != '\t' && u != ':' && u != '?' && u != '=' && u != '\n' && u != '\r')
+				return false;
+			return true;
+		}
+
+		if (c != u) {
+			return false;
+		}
+	}
 }
 
 
-char is_word_x(__xdata uint8_t *c, __xdata uint8_t *d)
+bool is_url_word_x(__xdata uint8_t *uri_str_p, __xdata uint8_t *src_str_p)
 {
-	register uint8_t i = 0;
+	uint8_t u, s;
 
-	while (d[i] && (d[i] == c[i]))
-		i++;
+	while(1) {
+		u = *uri_str_p++;
+		s = *src_str_p++;
 
-	if (d[i])
-		return 0;
-	if (c[i] != ' ' && c[i] != '\t' && c[i] != ':' && c[i] != '?' && c[i] != '=' && c[i] != '\n' && c[i] != '\r' && c[i])
-		return 0;
-	return 1;
+		if (s == '\0') {
+			if (u != '\0' && u != ' ' && u != '\t' && u != ':' && u != '?' && u != '=' && u != '\n' && u != '\r')
+				return false;
+			return true;
+		}
+
+		if (u == '%') {
+			bool again = true;
+			u = 0;
+
+			while(1) {
+				// Swap instruction is fine for rotation
+				u = (u << 4) | (u >> 4);
+
+				uint8_t p = *uri_str_p++;
+				u |= p - '0' < 10 ? (p - '0') : (p - 'A' + 10);
+
+				// force `jbc`-instruction.
+				if (again) {
+					again = false;
+				} else {
+					break;
+				}
+			}
+		} else if (u == '+') {
+			u = ' ';
+		}
+
+		if (s != u) {
+			return false;
+		}
+	}
+}
+
+
+bool is_word_x(__xdata uint8_t *lhs_str_p, __xdata uint8_t *rhs_str_p)
+{
+	uint8_t u, c;
+
+	while (1) {
+		u = *lhs_str_p++;
+		c = *rhs_str_p++;
+
+		if (c == '\0') {
+			if (u != '\0' && u != ' ' && u != '\t' && u != ':' && u != '?' && u != '=' && u != '\n' && u != '\r')
+				return false;
+			return true;
+		}
+
+		if (c != u) {
+			return false;
+		}
+	}
 }
 
 
@@ -294,14 +347,14 @@ uint8_t stream_upload(uint16_t bptr)
 			if (verify_crc) {
 				dbg_string("CRC16: "); dbg_short(crc_final); dbg_char('\n');
 				if (crc_final == 0xb001) {
-					print_string("Checksum OK.");
+					print_string("Checksum OK.\nUpload to flash done, will reset!\n");
+					// close connection to avoid retries by browser
+					uip_close();
+					reset_chip();
 				} else {
-					print_string("Checksum incorrect!");
+					print_string("Checksum incorrect! Aborting.\n");
+					uip_close();
 				}
-				print_string("\nUpload to flash done, will reset!\n");
-				// close connection to avoid retries by browser
-				uip_close();
-				reset_chip();
 			}
 			// Make sure there is a 0 at the end of the uploaded data
 			flash_buf[0] = 0;
@@ -329,18 +382,22 @@ uint8_t stream_upload(uint16_t bptr)
 			}
 			crc16(p + bptr);
 			flash_buf[write_len++] = p[bptr++];
-			if (write_len >= FLASHMEM_PAGE_SIZE) {
+			if (write_len >= FLASH_PAGE_SIZE) {
 				dbg_string("len: "); dbg_short(write_len); dbg_char(' ');
 				dbg_string("CRC16: "); dbg_short(crc_value); dbg_char('\n');
+				if (uptr % FLASH_SECTOR_SIZE == 0) {
+					flash_region.addr = uptr;
+					flash_sector_erase();
+				}
 				flash_region.addr = uptr;
-				flash_region.len = FLASHMEM_PAGE_SIZE;
+				flash_region.len = FLASH_PAGE_SIZE;
 				flash_write_bytes(flash_buf);
-				uptr += FLASHMEM_PAGE_SIZE;
-				write_len -= FLASHMEM_PAGE_SIZE;
+				uptr += FLASH_PAGE_SIZE;
+				write_len -= FLASH_PAGE_SIZE;
 
 				// Copy the remaining byte for the next page to the beginning of the buffer.
 				if (write_len > 0) {
-					memcpy(flash_buf, flash_buf + FLASHMEM_PAGE_SIZE, write_len);
+					memcpy(flash_buf, flash_buf + FLASH_PAGE_SIZE, write_len);
 				}
 			}
 			bindex = 0;
@@ -355,39 +412,74 @@ void handle_post(void)
 	__xdata uint8_t *p = uip_appdata;
 	__xdata uint8_t *request_path = p + 6;
 
-	dbg_string("Is POST\n");
-	p += 5;  // Skip post
-	// Find end of request path
-	while (*p && !is_separator(*p))
-		p++;
-	*p++ = '\0';
+	// Was the multipart header sent in multiple packets?
+	if (s->tstate != TSTATE_MULTIPART) {
+		dbg_string("Is POST\n");
+		p += 5;  // Skip post
+		// Find end of request path
+		while (*p && !is_separator(*p))
+			p++;
+		*p++ = '\0';
 
-	// Find end of request header
-	boundary[0] ='\0';
-	p = scan_header(p);
-	dbg_string("Boundary: >"); dbg_string_x(boundary); dbg_string("<\n");
-	if (!*p || !content_type) {
-		dbg_string("Bad Request!\n");
-		send_not_found();
-		return;
+		// Find end of request header
+		boundary[0] ='\0';
+		p = scan_header(p);
+		dbg_string("Boundary: >"); dbg_string_x(boundary); dbg_string("<\n");
+		if (!*p || !content_type) {
+			dbg_string("Bad Request!\n");
+			send_not_found();
+			return;
+		}
+		if (is_word(request_path, "upload")) {
+			if (flash_size < FIRMWARE_UPLOAD_START*2)
+			{
+				print_string("Flash too small for firmware upload!\n");
+				send_bad_request();
+				return;
+			}
+			print_string("Firmware upload started.");
+			uptr = FIRMWARE_UPLOAD_START;
+			verify_crc = 1;
+			max_upload = 1024576;
+		} else if (is_word(request_path, "config")) {
+			if (!authenticated) {
+				send_unauthorized();
+				return;
+			}
+			dbg_string("Configuration upload, erasing config mem!\n");
+			uptr = CONFIG_START;
+			verify_crc = 0;
+			max_upload = 2048;
+			flash_region.addr = CONFIG_START;
+			flash_sector_erase();
+		}
+		// Check for other POST requests, which are not multipart, below
+	} else {
+		dbg_string("Multipart request\n");
 	}
 
 	if (is_word(request_path, "cmd")) {
-		register uint8_t i = 0;
 		p += 4;
 		if (!authenticated) {
 			send_unauthorized();
 			return;
 		}
-		while (*p && *p != '\n' && *p != '\r')
-			cmd_buffer[i++] = *p++;
-		cmd_buffer[i] = '\0';
-		if (i)
-			cmd_available = 1;
+		execute_commands(p);
+		if (err_status != ERR_OK) {
+			send_bad_request();
+			return;
+		}
 	} else if (is_word(request_path, "login")) {
 		dbg_string("POST login\n");
+
+		if (!content_type || !is_word(content_type, "application/x-www-form-urlencoded")) {
+			dbg_string("Bad request!\n");
+			send_bad_request();
+			return;
+		}
+
 		p += 8; // Read also over "pwd="
-		if (is_word_x(p, passwd)) {
+		if (is_url_word_x(p, passwd)) {
 			dbg_string("Password accepted!\n");
 			read_reg_timer(&last_session_use);
 			gen_random_bytes(session_id, SESSION_ID_LENGTH);
@@ -398,10 +490,11 @@ void handle_post(void)
 				outbuf[slen++] = session_id[i];
 			slen += strtox(outbuf + slen, "; SameSite=Strict\r\n\r\n");
 		} else {
+			dbg_string("Password invalid!\n");
 			slen = strtox(outbuf, "HTTP/1.1 302 Found\r\nLocation: login.html\r\n\r\n");
 		}
 		return;
-	} else if (is_word(request_path, "upload") || is_word(request_path, "config")) {
+	} else if (s->tstate == TSTATE_MULTIPART || is_word(request_path, "upload") || is_word(request_path, "config")) {
 		dbg_string("POST upload/config request\n");
 		if (!authenticated) {
 			send_unauthorized();
@@ -415,8 +508,10 @@ void handle_post(void)
 		// We skip the intial parts as part of the header
 		do {
 			p = skip_boundary(p);
-			if (!*p)
-				goto bad_request;
+			if (!*p) {
+				s->tstate = TSTATE_MULTIPART;
+				return;
+			}
 			p = scan_header(p);
 			if (!*p)
 				goto bad_request;
@@ -426,25 +521,6 @@ void handle_post(void)
 		dbg_string("Have content octets\n");
 		p += 4; // Skip \r\n\r\n sequence at end of preamble of part
 
-		if (is_word(request_path, "upload")) {
-			if (flash_size < FIRMWARE_UPLOAD_START*2)
-			{
-				print_string("Flash too small for firmware upload!\n");
-				send_bad_request();
-				return;
-			}
-			print_string("Firmware upload started.");
-			uptr = FIRMWARE_UPLOAD_START;
-			verify_crc = 1;
-			max_upload = 1024576;
-		} else {
-			dbg_string("Configuration upload, erasing config mem!\n");
-			uptr = CONFIG_START;
-			verify_crc = 0;
-			max_upload = 2048;
-			flash_region.addr = CONFIG_START;
-			flash_sector_erase();
-		}
 		flash_init(0); // Re-initialize flash for non-DIO operation, otherwise flashing fails
 		set_sys_led_state(SYS_LED_FAST);
 
@@ -473,6 +549,12 @@ void httpd_appcall(void)
 	__xdata struct httpd_state * __xdata s = &(uip_conn->appstate);
 
 	dbg_char('P');
+#ifdef DEBUG
+	if (uip_newdata())
+		write_char('N');
+	print_byte(s->tstate);
+	write_char(' ');
+#endif
 	if(uip_connected() && s->tstate == TSTATE_CLOSED) {
 		dbg_string("Connected...\n");
 		s->tstate = TSTATE_NONE;
@@ -544,10 +626,10 @@ void httpd_appcall(void)
 		dbg_char('\n');
 #endif
 		p = uip_appdata;
-		if (is_word(p, "POST")) {
+		if (is_word(p, "POST") || s->tstate == TSTATE_MULTIPART) {
 			handle_post();
 			// If this is an ongoing post stream, then wait for the next packet
-			if (s->tstate == TSTATE_POST) {
+			if (s->tstate == TSTATE_POST || s->tstate == TSTATE_MULTIPART) {
 				uip_len = 0;
 				return;
 			}
@@ -600,6 +682,8 @@ void httpd_appcall(void)
 				send_mtu();
 			} else if (is_word(q, "/lag.json")) {
 				send_lag();
+			} else if (is_word(q, "/vlanlist")) {
+				send_vlanlist();
 			} else if (is_word(q, "/config")) {
 				send_config();
 			} else if (is_word(q, "/cmd_log")) {
